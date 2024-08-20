@@ -1,0 +1,10 @@
+aws_access_key = ""
+aws_secret_key = ""
+aws_region     = "eu-central-1"
+
+APP_PORT             = ""
+DB_PROTOCOL          = ""
+DB_READONLY_USERNAME = ""
+DB_READONLY_SEC      = ""
+DB_HOST              = ""
+app_image            = ""

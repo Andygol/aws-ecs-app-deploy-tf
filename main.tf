@@ -122,7 +122,7 @@ resource "aws_ecs_service" "main" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.main.id
-  desired_count   = 1
+  desired_count   = var.subnet_count
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -130,6 +130,13 @@ resource "aws_ecs_service" "main" {
     security_groups  = [aws_security_group.main.id]
     assign_public_ip = true
   }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.ecs.arn
+    container_name   = "${var.app_name}-container"
+    container_port   = var.APP_PORT
+  }
+  depends_on = [ aws_lb.nlb ]
 }
 
 resource "aws_security_group" "main" {
@@ -162,7 +169,7 @@ resource "aws_vpc" "main" {
 data "aws_availability_zones" "available" {}
 
 resource "aws_subnet" "main" {
-  count             = 1
+  count             = var.subnet_count
   vpc_id            = aws_vpc.main.id
   cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
   availability_zone = element(data.aws_availability_zones.available.names, count.index)
@@ -186,7 +193,7 @@ resource "aws_route_table" "main" {
 }
 
 resource "aws_route_table_association" "main" {
-  count          = 1
+  count          = var.subnet_count
   subnet_id      = aws_subnet.main[count.index].id
   route_table_id = aws_route_table.main.id
 }
@@ -209,3 +216,53 @@ resource "aws_vpc_endpoint" "kms" {
   subnet_ids         = aws_subnet.main[*].id
 }
 
+resource "aws_eip" "nlb" {}
+
+resource "aws_lb" "nlb" {
+  name               = "${var.app_name}-nlb"
+  internal           = false
+  load_balancer_type = "network"
+  # subnets            = aws_subnet.main[*].id
+
+  dynamic "subnet_mapping" {
+    for_each = aws_subnet.main[*].id
+    content {
+      subnet_id     = subnet_mapping.value
+      allocation_id = aws_eip.nlb.id
+    }
+  }
+}
+
+resource "aws_lb_target_group" "ecs" {
+  name        = "${var.app_name}-tg"
+  port        = var.APP_PORT
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+}
+
+resource "aws_lb_listener" "ecs" {
+  load_balancer_arn = aws_lb.nlb.arn
+  port              = var.APP_PORT
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ecs.arn
+  }
+}
+
+output "service_url" {
+  value = "http://${aws_lb.nlb.dns_name}:${var.APP_PORT}"
+  description = "The URL of the service"
+}
+
+output "public_ip" {
+  value       = aws_eip.nlb.public_ip
+  description = "The public IP of the Elastic IP"
+}
+
+output "public_dns" {
+  value       = aws_eip.nlb.public_dns
+  description = "The public DNS of the Elastic IP"
+}

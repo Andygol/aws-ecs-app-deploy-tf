@@ -27,6 +27,10 @@ resource "aws_subnet" "main" {
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.app_name}-igw"
+  }
 }
 
 resource "aws_route_table" "main" {
@@ -35,6 +39,10 @@ resource "aws_route_table" "main" {
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${var.app_name}-rt"
   }
 }
 
@@ -45,10 +53,11 @@ resource "aws_route_table_association" "main" {
 }
 
 resource "aws_security_group" "main" {
-  name   = "${var.app_name}-security-group"
+  name   = "${var.app_name}-sg"
   vpc_id = aws_vpc.main.id
 
   ingress {
+    description = "Allow inbound HTTPS traffic on port ${var.APP_PORT}"
     cidr_blocks = ["0.0.0.0/0"]
     protocol    = "tcp"
     from_port   = var.APP_PORT
@@ -60,6 +69,10 @@ resource "aws_security_group" "main" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-sg"
   }
 }
 
@@ -91,6 +104,7 @@ resource "aws_secretsmanager_secret_version" "app_secrets_version" {
     DB_READONLY_USERNAME = var.DB_READONLY_USERNAME,
     DB_READONLY_SEC      = var.DB_READONLY_SEC,
     DB_HOST              = var.DB_HOST
+    FRONTEND_URL         = var.FRONTEND_URL
   })
 }
 
@@ -173,7 +187,8 @@ resource "aws_ecs_task_definition" "main" {
         { name = "DB_PROTOCOL", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_PROTOCOL::" },
         { name = "DB_READONLY_USERNAME", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_READONLY_USERNAME::" },
         { name = "DB_READONLY_SEC", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_READONLY_SEC::" },
-        { name = "DB_HOST", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_HOST::" }
+        { name = "DB_HOST", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_HOST::" },
+        { name = "FRONTEND_URL", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:FRONTEND_URL::" }
       ]
     }
   ])

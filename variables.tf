@@ -47,6 +47,11 @@ variable "DB_HOST" {
   type        = string
 }
 
+variable "FRONTEND_URL" {
+  description = "The URL of the frontend application"
+  type        = string
+}
+
 variable "app_health" {
   description = "The health check path for the application"
   type        = string

@@ -11,6 +11,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
   availability_zones = data.aws_availability_zones.available.names
 }
@@ -57,8 +59,8 @@ resource "aws_security_group" "main" {
   vpc_id = aws_vpc.main.id
 
   ingress {
-    description = "Allow inbound HTTPS traffic on port ${var.APP_PORT}"
-    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow inbound traffic on port ${var.APP_PORT}"
+    cidr_blocks = concat(var.allowed_ingress_cidr_blocks, [for eip in aws_eip.nlb : "${eip.public_ip}/32"])
     protocol    = "tcp"
     from_port   = var.APP_PORT
     to_port     = var.APP_PORT
@@ -68,7 +70,7 @@ resource "aws_security_group" "main" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_egress_cidr_blocks
   }
 
   tags = {
@@ -94,6 +96,10 @@ resource "random_string" "suffix" {
 resource "aws_secretsmanager_secret" "app_secrets" {
   name       = "${var.app_name}-env-secrets-${random_string.suffix.result}"
   kms_key_id = aws_kms_key.main.arn
+
+  tags = {
+    Name = "${var.app_name}-secrets"
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "app_secrets_version" {
@@ -103,7 +109,7 @@ resource "aws_secretsmanager_secret_version" "app_secrets_version" {
     DB_PROTOCOL          = var.DB_PROTOCOL,
     DB_READONLY_USERNAME = var.DB_READONLY_USERNAME,
     DB_READONLY_SEC      = var.DB_READONLY_SEC,
-    DB_HOST              = var.DB_HOST
+    DB_HOST              = var.DB_HOST,
     FRONTEND_URL         = var.FRONTEND_URL
   })
 }
@@ -122,11 +128,22 @@ resource "aws_iam_policy" "ecs_task_kms_secret_manager_policy" {
           "kms:Encrypt",
           "kms:GenerateDataKey",
           "kms:DescribeKey",
-          "secretsmanager:GetSecretValue"
+          "secretsmanager:GetSecretValue",
+          "ec2:AllocateAddress",
+          "ec2:ReleaseAddress",
+          "ec2:DescribeAddresses",
+          "ec2:DisassociateAddress",
+          "ec2:AssociateAddress",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:CreateTags",
+          "ec2:DeleteTags"
         ],
         Resource = [
           aws_secretsmanager_secret.app_secrets.arn,
-          aws_kms_key.main.arn
+          aws_kms_key.main.arn,
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:elastic-ip/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+          "*"
         ]
       }
     ]
@@ -149,6 +166,10 @@ resource "aws_iam_role" "ecs_task_execution_role" {
     "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
     "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
   ]
+
+  tags = {
+    Name = "${var.app_name}-ecs-task-execution-role"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy_attachment" {
@@ -156,9 +177,39 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy_attach
   policy_arn = aws_iam_policy.ecs_task_kms_secret_manager_policy.arn
 }
 
+# Create CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/${var.app_name}"
+  retention_in_days = 30
+
+  tags = {
+    Name = "${var.app_name}-logs"
+  }
+
+  depends_on = [
+    aws_vpc_endpoint.logs
+  ]
+}
+
+resource "aws_vpc_endpoint" "logs" {
+  vpc_id             = aws_vpc.main.id
+  service_name       = "com.amazonaws.${var.aws_region}.logs"
+  vpc_endpoint_type  = "Interface"
+  security_group_ids = [aws_security_group.main.id]
+  subnet_ids         = aws_subnet.main[*].id
+
+  tags = {
+    Name = "${var.app_name}-logs-endpoint"
+  }
+}
+
 # ECS Cluster and Task Definition
 resource "aws_ecs_cluster" "main" {
   name = "${var.app_name}-cluster"
+
+  tags = {
+    Name = "${var.app_name}-cluster"
+  }
 }
 
 resource "aws_ecs_task_definition" "main" {
@@ -189,16 +240,37 @@ resource "aws_ecs_task_definition" "main" {
         { name = "DB_READONLY_SEC", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_READONLY_SEC::" },
         { name = "DB_HOST", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:DB_HOST::" },
         { name = "FRONTEND_URL", valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:FRONTEND_URL::" }
-      ]
+      ],
+      logConfiguration = {
+        logDriver = "awslogs",
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name,
+          "awslogs-region"        = var.aws_region,
+          "awslogs-stream-prefix" = "ecs"
+        }
+      },
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.APP_PORT}${var.app_health} || exit 1"],
+        interval    = var.health_check_interval,
+        timeout     = var.health_check_timeout,
+        retries     = var.health_check_unhealthy_threshold,
+        startPeriod = 120
+      }
     }
   ])
+
+  tags = {
+    Name = "${var.app_name}-task"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.ecs]
 }
 
 resource "aws_ecs_service" "main" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.main.id
-  desired_count   = var.subnet_count
+  task_definition = aws_ecs_task_definition.main.arn
+  desired_count   = var.desired_task_count
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -212,27 +284,76 @@ resource "aws_ecs_service" "main" {
     container_name   = "${var.app_name}-container"
     container_port   = var.APP_PORT
   }
-  depends_on = [aws_lb.nlb]
+
+  service_connect_configuration {
+    enabled   = true
+    namespace = aws_service_discovery_private_dns_namespace.main.arn
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.main.arn
+  }
+
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 100
+  health_check_grace_period_seconds  = 60
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  lifecycle {
+    ignore_changes = []
+  }
+
+  tags = {
+    Name = "${var.app_name}-service"
+  }
+
+  depends_on = [
+    aws_lb.nlb,
+    aws_lb_target_group.ecs,
+    aws_service_discovery_service.main
+  ]
 }
 
 # Load Balancer and Target Group
 resource "aws_eip" "nlb" {
+  count      = var.subnet_count
   domain     = "vpc"
   depends_on = [aws_internet_gateway.main]
+
+  tags = {
+    Name = "${var.app_name}-eip-${count.index}"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lb" "nlb" {
   name               = "${var.app_name}-nlb"
   internal           = false
   load_balancer_type = "network"
-  dynamic "subnet_mapping" {
-    for_each = aws_subnet.main[*].id
 
+  dynamic "subnet_mapping" {
+    for_each = range(var.subnet_count)
     content {
-      subnet_id     = subnet_mapping.value
-      allocation_id = aws_eip.nlb.id
+      subnet_id     = aws_subnet.main[subnet_mapping.key].id
+      allocation_id = aws_eip.nlb[subnet_mapping.key].id
     }
   }
+
+  enable_cross_zone_load_balancing = true
+  enable_deletion_protection       = var.enable_deletion_protection
+
+  tags = {
+    Name = "${var.app_name}-nlb"
+  }
+
+  depends_on = [aws_eip.nlb]
 }
 
 resource "aws_lb_target_group" "ecs" {
@@ -246,12 +367,28 @@ resource "aws_lb_target_group" "ecs" {
     enabled             = true
     path                = var.app_health
     port                = var.APP_PORT
-    matcher             = 200
-    interval            = 30
-    timeout             = 10
-    healthy_threshold   = 5
-    unhealthy_threshold = 2
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = var.health_check_interval
+    timeout             = var.health_check_timeout
+    healthy_threshold   = var.health_check_healthy_threshold
+    unhealthy_threshold = var.health_check_unhealthy_threshold
   }
+
+  stickiness {
+    enabled = true
+    type    = "source_ip"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name = "${var.app_name}-tg"
+  }
+
+  depends_on = [aws_lb.nlb]
 }
 
 resource "aws_lb_listener" "ecs" {
@@ -263,6 +400,8 @@ resource "aws_lb_listener" "ecs" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.ecs.arn
   }
+
+  depends_on = [aws_lb_target_group.ecs]
 }
 
 # VPC Endpoints
@@ -272,6 +411,10 @@ resource "aws_vpc_endpoint" "secretsmanager" {
   vpc_endpoint_type  = "Interface"
   security_group_ids = [aws_security_group.main.id]
   subnet_ids         = aws_subnet.main[*].id
+
+  tags = {
+    Name = "${var.app_name}-secretsmanager-endpoint"
+  }
 }
 
 resource "aws_vpc_endpoint" "kms" {
@@ -280,6 +423,46 @@ resource "aws_vpc_endpoint" "kms" {
   vpc_endpoint_type  = "Interface"
   security_group_ids = [aws_security_group.main.id]
   subnet_ids         = aws_subnet.main[*].id
+
+  tags = {
+    Name = "${var.app_name}-kms-endpoint"
+  }
+}
+
+# Add Service Discovery
+resource "aws_service_discovery_private_dns_namespace" "main" {
+  name        = "${var.app_name}.local"
+  description = "Service discovery namespace for ${var.app_name}"
+  vpc         = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.app_name}-dns-namespace"
+  }
+}
+
+resource "aws_service_discovery_service" "main" {
+  name = var.app_name
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.main.id
+
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+
+  tags = {
+    Name = "${var.app_name}-discovery-service"
+  }
+
+  depends_on = [aws_service_discovery_private_dns_namespace.main]
 }
 
 # Outputs
@@ -288,12 +471,17 @@ output "service_url" {
   description = "The URL of the service"
 }
 
-output "public_ip" {
-  value       = aws_eip.nlb.public_ip
-  description = "The public IP of the Elastic IP"
+output "public_ips" {
+  value       = aws_eip.nlb[*].public_ip
+  description = "The public IPs of the Elastic IPs"
 }
 
 output "public_dns" {
-  value       = aws_eip.nlb.public_dns
-  description = "The public DNS of the Elastic IP"
+  value       = aws_eip.nlb[*].public_dns
+  description = "The public DNS of the Elastic IPs"
+}
+
+output "service_discovery_endpoint" {
+  value       = "${var.app_name}.${aws_service_discovery_private_dns_namespace.main.name}"
+  description = "The service discovery endpoint"
 }

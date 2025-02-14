@@ -5,6 +5,17 @@ terraform {
       version = "5.63.0"
     }
   }
+  required_version = ">= 1.0.0"
+
+  # Uncomment to use remote state
+  # backend "s3" {
+  #   bucket         = "your-terraform-state-bucket"
+  #   key            = "state/terraform.tfstate"
+  #   region         = "eu-central-1"
+  #   encrypt        = true
+  #   kms_key_id     = "alias/terraform-bucket-key"
+  #   dynamodb_table = "terraform-state-lock"
+  # }
 }
 
 # Specify the provider and access details

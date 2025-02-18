@@ -148,6 +148,10 @@ resource "aws_iam_policy" "ecs_task_kms_secret_manager_policy" {
       }
     ]
   })
+
+  tags = {
+    "Name" = "${var.app_name}-kms-secret-manager-policy"
+  }
 }
 
 resource "aws_iam_role" "ecs_task_execution_role" {
@@ -183,7 +187,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
   retention_in_days = 30
 
   tags = {
-    Name = "${var.app_name}-logs"
+    Name = "${var.app_name}-cloudwatch-logs"
   }
 
   depends_on = [
@@ -401,6 +405,9 @@ resource "aws_lb_listener" "ecs" {
     target_group_arn = aws_lb_target_group.ecs.arn
   }
 
+  tags = {
+    "Name" = "${var.app_name}-lb-listener"
+  }
   depends_on = [aws_lb_target_group.ecs]
 }
 
@@ -471,6 +478,10 @@ resource "aws_appautoscaling_target" "ecs_target" {
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.main.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
+
+  tags = {
+    "Name" = "${var.app_name}-scaling-target"
+  }
 }
 
 # CPU Utilization Scaling

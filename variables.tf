@@ -153,3 +153,19 @@ variable "scale_out_cooldown" {
   type        = number
   default     = 300
 }
+
+variable "environment" {
+  description = "Environment name (e.g., dev, staging, prod)"
+  type        = string
+}
+
+variable "owner" {
+  description = "Owner of the resources"
+  type        = string
+}
+
+variable "cost_center" {
+  description = "Cost center for billing purposes"
+  type        = string
+  default     = "undefined"
+}

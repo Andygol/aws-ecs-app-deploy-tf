@@ -117,3 +117,39 @@ variable "allowed_egress_cidr_blocks" {
   default     = [] # Restrict as needed
 }
 
+# Autoscaling settings
+variable "min_task_count" {
+  description = "Minimum number of tasks to run"
+  type        = number
+  default     = 1
+}
+
+variable "max_task_count" {
+  description = "Maximum number of tasks to run"
+  type        = number
+  default     = 10
+}
+
+variable "target_cpu_utilization" {
+  description = "Target CPU utilization percentage"
+  type        = number
+  default     = 70
+}
+
+variable "target_memory_utilization" {
+  description = "Target memory utilization percentage"
+  type        = number
+  default     = 70
+}
+
+variable "scale_in_cooldown" {
+  description = "The amount of time, in seconds, after a scale in activity completes before another scale in activity can start"
+  type        = number
+  default     = 300
+}
+
+variable "scale_out_cooldown" {
+  description = "The amount of time, in seconds, after a scale out activity completes before another scale out activity can start"
+  type        = number
+  default     = 300
+}

@@ -1,10 +1,20 @@
 aws_access_key = ""
 aws_secret_key = ""
-aws_region     = "eu-central-1"
+aws_region     = ""
 
 APP_PORT             = ""
 DB_PROTOCOL          = ""
 DB_READONLY_USERNAME = ""
 DB_READONLY_SEC      = ""
 DB_HOST              = ""
+FRONTEND_URL         = "*"
 app_image            = ""
+app_name             = ""
+
+app_health                 = ""
+subnet_count               = 2
+enable_deletion_protection = false
+desired_task_count         = 1
+
+allowed_ingress_cidr_blocks = ["0.0.0.0/0"]
+allowed_egress_cidr_blocks  = ["0.0.0.0/0"]
